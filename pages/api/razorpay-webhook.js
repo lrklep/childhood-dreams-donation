@@ -6,8 +6,8 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 // Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Email transporter
-const transporter = nodemailer.createTransporter({
+// Email transporter - CORRECT METHOD NAME
+const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
@@ -22,9 +22,10 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  console.log('🔔 Webhook received!');
+  console.log('🔔 Webhook received at:', new Date().toISOString());
   
   if (req.method !== 'POST') {
+    console.log('❌ Wrong method:', req.method);
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
@@ -32,25 +33,41 @@ export default async function handler(req, res) {
     // Get raw body for signature verification
     const buf = await getRawBody(req);
     const signature = req.headers['x-razorpay-signature'];
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
     
-    console.log('📝 Verifying signature...');
+    // Debug logging
+    console.log('📋 Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('🔐 Webhook secret exists:', !!webhookSecret);
+    console.log('📝 Received signature:', signature);
+    console.log('📦 Body length:', buf.length);
+    
+    // Check if webhook secret exists
+    if (!webhookSecret) {
+      console.error('❌ RAZORPAY_WEBHOOK_SECRET not found in environment');
+      return res.status(500).json({ error: 'Webhook secret not configured' });
+    }
     
     // Verify webhook signature
     const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+      .createHmac('sha256', webhookSecret)
       .update(buf)
       .digest('hex');
 
+    console.log('🔍 Expected signature:', expectedSignature);
+    console.log('✅ Signatures match:', signature === expectedSignature);
+
     if (signature !== expectedSignature) {
-      console.error('❌ Invalid signature');
-      return res.status(400).json({ error: 'Invalid signature' });
+      console.error('❌ Signature verification failed');
+      console.error('   Received:', signature);
+      console.error('   Expected:', expectedSignature);
+      return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    console.log('✅ Signature verified');
+    console.log('✅ Signature verified successfully');
 
     // Parse webhook payload
     const payload = JSON.parse(buf.toString());
-    console.log('📦 Event:', payload.event);
+    console.log('📦 Event type:', payload.event);
 
     // Only process payment.captured events
     if (payload.event !== 'payment.captured') {
@@ -64,6 +81,7 @@ export default async function handler(req, res) {
 
     console.log('💰 Payment ID:', payment.id);
     console.log('📋 Order ID:', order?.id);
+    console.log('💳 Customer email:', payment.email);
 
     // Extract donor information from order notes
     const donorInfo = {
@@ -82,22 +100,24 @@ export default async function handler(req, res) {
 
     const amount = payment.amount / 100; // Convert from paise to rupees
 
-    console.log('👤 Sending email to:', donorInfo.email);
+    console.log('👤 Preparing to send email to:', donorInfo.email);
 
     // Generate and send personalized email
     await sendCustomEmail(donorInfo, amount, payment.id);
 
     console.log('✅ Email sent successfully');
-    return res.status(200).json({ status: 'success' });
+    return res.status(200).json({ status: 'success', processed: true });
 
   } catch (error) {
     console.error('❌ Webhook error:', error);
-    return res.status(500).json({ error: 'Webhook processing failed' });
+    return res.status(500).json({ error: 'Webhook processing failed', details: error.message });
   }
 }
 
 async function sendCustomEmail(donorInfo, amount, paymentId) {
   try {
+    console.log('🤖 Generating AI email content...');
+    
     // Generate personalized content with Gemini AI
     const emailContent = await generateEmailWithGemini(donorInfo, amount);
     
@@ -156,7 +176,8 @@ Style: Mix nostalgic warmth with 90s cyber-optimism.`;
     return response.text();
     
   } catch (error) {
-    console.error('❌ Gemini API failed:', error);
+    console.error('❌ Gemini API failed, using fallback:', error);
+    
     // Fallback email
     return `
 ╔════════════════════════════════════════════════════════╗
@@ -174,7 +195,18 @@ Thank you for your INCREDIBLE ₹${amount.toLocaleString()} donation!!!
 ${donorInfo.selectedItem.emoji} Item: ${donorInfo.selectedItem.item}
 🎯 Impact: ${donorInfo.selectedItem.impact}
 
+${donorInfo.story && donorInfo.story !== 'No story shared' ? 
+  `\nYour story about "${donorInfo.story}" really touched us. By helping others, you're healing that part of yourself that once wished for more.\n` : 
+  `\nWe know everyone has childhood dreams that didn't come true. Thank you for turning that experience into someone else's joy!\n`
+}
+
 You've just joined the CHILDHOOD DREAMS REVOLUTION through the power of the INFORMATION SUPERHIGHWAY!
+
+Your inner child is probably doing a victory dance right now! 💃🕺
+
+═══════════════════════════════════════════════════════
+            IMPACT THROUGH THE DIGITAL AGE!
+═══════════════════════════════════════════════════════
 
 Forever grateful in the digital realm,
 The Childhood Dreams Team 🚀
