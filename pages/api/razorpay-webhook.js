@@ -1,11 +1,12 @@
 import crypto from 'crypto';
+import getRawBody from 'raw-body';
 import nodemailer from 'nodemailer';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Email transporter setup
+// Email transporter
 const transporter = nodemailer.createTransporter({
   service: 'gmail',
   auth: {
@@ -14,128 +15,116 @@ const transporter = nodemailer.createTransporter({
   },
 });
 
+export const config = {
+  api: {
+    bodyParser: false, // Important for signature verification
+  },
+};
+
 export default async function handler(req, res) {
+  console.log('🔔 Webhook received!');
+  
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  console.log('=== WEBHOOK RECEIVED ===');
-  console.log('Event:', req.body.event);
-
   try {
-    // Verify webhook signature for security
+    // Get raw body for signature verification
+    const buf = await getRawBody(req);
     const signature = req.headers['x-razorpay-signature'];
-    const body = JSON.stringify(req.body);
-    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
     
-    if (!secret) {
-      console.error('❌ Webhook secret not configured');
-      return res.status(500).json({ error: 'Webhook secret missing' });
-    }
-
+    console.log('📝 Verifying signature...');
+    
+    // Verify webhook signature
     const expectedSignature = crypto
-      .createHmac('sha256', secret)
-      .update(body)
+      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+      .update(buf)
       .digest('hex');
 
     if (signature !== expectedSignature) {
-      console.error('❌ Invalid webhook signature');
+      console.error('❌ Invalid signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
 
-    console.log('✅ Webhook signature verified');
+    console.log('✅ Signature verified');
 
-    // Process webhook event
-    const event = req.body.event;
-    const paymentData = req.body.payload.payment.entity;
-    const orderData = req.body.payload.order?.entity;
-
-    console.log('Event type:', event);
-    console.log('Payment ID:', paymentData.id);
+    // Parse webhook payload
+    const payload = JSON.parse(buf.toString());
+    console.log('📦 Event:', payload.event);
 
     // Only process payment.captured events
-    if (event === 'payment.captured') {
-      // Extract customer and order info
-      const customerEmail = paymentData.email;
-      const amount = paymentData.amount / 100; // Convert from paise
-      const paymentId = paymentData.id;
-
-      // Get order details from notes
-      const orderNotes = orderData?.notes || {};
-      
-      // Prepare donor info for email generation
-      const donorInfo = {
-        name: orderNotes.donor_name || 'Valued Donor',
-        email: customerEmail,
-        phone: paymentData.contact,
-        age: orderNotes.donor_age || 'Not provided',
-        story: orderNotes.donor_story || 'No story shared',
-        selectedItem: {
-          item: orderNotes.selected_item || 'Childhood Dream',
-          impact: orderNotes.selected_impact || 'Making dreams come true',
-          emoji: '🌟'
-        },
-        sectionType: orderNotes.section_type || 'kids'
-      };
-
-      console.log('Sending thank you email to:', customerEmail);
-
-      // Generate and send personalized email
-      await sendCustomThankYouEmail(donorInfo, amount, paymentId);
-      
-      console.log('✅ Thank you email sent successfully');
-    } else {
-      console.log('ℹ️ Ignoring event:', event);
+    if (payload.event !== 'payment.captured') {
+      console.log('ℹ️ Ignoring event:', payload.event);
+      return res.status(200).json({ status: 'Event ignored' });
     }
 
-    res.status(200).json({ received: true, event: event });
+    // Extract payment and order data
+    const payment = payload.payload.payment.entity;
+    const order = payload.payload.order?.entity;
+
+    console.log('💰 Payment ID:', payment.id);
+    console.log('📋 Order ID:', order?.id);
+
+    // Extract donor information from order notes
+    const donorInfo = {
+      name: order?.notes?.donor_name || 'Valued Donor',
+      email: payment.email,
+      phone: payment.contact,
+      age: order?.notes?.donor_age || 'Not provided',
+      story: order?.notes?.donor_story || 'No story shared',
+      selectedItem: {
+        item: order?.notes?.selected_item || 'Childhood Dream',
+        impact: order?.notes?.selected_impact || 'Making dreams come true',
+        emoji: order?.notes?.selected_emoji || '🌟'
+      },
+      sectionType: order?.notes?.section_type || 'kids'
+    };
+
+    const amount = payment.amount / 100; // Convert from paise to rupees
+
+    console.log('👤 Sending email to:', donorInfo.email);
+
+    // Generate and send personalized email
+    await sendCustomEmail(donorInfo, amount, payment.id);
+
+    console.log('✅ Email sent successfully');
+    return res.status(200).json({ status: 'success' });
 
   } catch (error) {
-    console.error('❌ Webhook processing failed:', error);
-    res.status(500).json({ error: 'Webhook processing failed' });
+    console.error('❌ Webhook error:', error);
+    return res.status(500).json({ error: 'Webhook processing failed' });
   }
 }
 
-async function sendCustomThankYouEmail(donorInfo, amount, paymentId) {
+async function sendCustomEmail(donorInfo, amount, paymentId) {
   try {
-    console.log('Generating personalized email content...');
+    // Generate personalized content with Gemini AI
+    const emailContent = await generateEmailWithGemini(donorInfo, amount);
     
-    // Generate personalized content with Gemini Pro
-    const personalizedContent = await generateThankYouWithGemini(donorInfo, amount);
-    
-    // Email options with 90s styling
+    // Send email
     const mailOptions = {
       from: `"🌟 Childhood Dreams Network" <${process.env.EMAIL_USER}>`,
       to: donorInfo.email,
       subject: `🎉 THANK YOU ${donorInfo.name.toUpperCase()} - ${donorInfo.selectedItem.item} DREAM ACTIVATED! 🚀`,
-      text: personalizedContent,
+      text: emailContent,
       html: `
-        <div style="font-family: 'Courier New', monospace; background: #000080; color: #00FF00; padding: 30px; border: 5px solid #FFFF00; border-radius: 10px; max-width: 700px; margin: 0 auto;">
-          <pre style="color: #00FF00; font-size: 14px; line-height: 1.6; white-space: pre-wrap; margin: 0;">${personalizedContent}</pre>
+        <div style="font-family: 'Courier New', monospace; background: #000080; color: #00FF00; padding: 30px; border: 5px solid #FFFF00; max-width: 700px; margin: 0 auto;">
+          <pre style="color: #00FF00; font-size: 14px; line-height: 1.6; white-space: pre-wrap;">${emailContent}</pre>
           
-          <div style="margin-top: 30px; text-align: center; border: 3px solid #FF69B4; padding: 20px; background: #FF1493; border-radius: 8px;">
-            <h3 style="color: #FFFFFF; margin: 0 0 15px 0; font-size: 18px;">🎯 PAYMENT CONFIRMATION 🎯</h3>
-            <div style="color: #FFFFFF; font-size: 16px; font-weight: bold;">
-              <p style="margin: 5px 0;"><strong>💰 Amount:</strong> ₹${amount.toLocaleString()}</p>
-              <p style="margin: 5px 0;"><strong>🎮 Item:</strong> ${donorInfo.selectedItem.item}</p>
-              <p style="margin: 5px 0;"><strong>✨ Impact:</strong> ${donorInfo.selectedItem.impact}</p>
-              <p style="margin: 5px 0;"><strong>🔢 Payment ID:</strong> ${paymentId}</p>
-            </div>
-          </div>
-          
-          <div style="margin-top: 20px; text-align: center; border-top: 2px solid #FFFF00; padding-top: 15px;">
-            <p style="color: #FFFF00; font-size: 12px; margin: 0; line-height: 1.4;">
-              💌 This email was generated by our AI system and sent through secure CYBER-NETWORK!<br/>
-              🌟 Childhood Dreams Foundation | Est. 2025 | Healing through Technology 🌟
+          <div style="margin-top: 20px; text-align: center; border: 3px solid #FF69B4; padding: 15px; background: #FF1493;">
+            <h3 style="color: #FFFFFF; margin: 0;">🎯 PAYMENT CONFIRMATION 🎯</h3>
+            <p style="color: #FFFFFF; margin: 10px 0;">
+              Amount: ₹${amount.toLocaleString()}<br/>
+              Item: ${donorInfo.selectedItem.item}<br/>
+              Payment ID: ${paymentId}
             </p>
           </div>
         </div>
       `
     };
 
-    // Send email
     await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent to:', donorInfo.email);
+    console.log('📧 Email sent to:', donorInfo.email);
 
   } catch (error) {
     console.error('❌ Email sending failed:', error);
@@ -143,35 +132,22 @@ async function sendCustomThankYouEmail(donorInfo, amount, paymentId) {
   }
 }
 
-async function generateThankYouWithGemini(donorInfo, amount) {
-  const { name, age, story, selectedItem, sectionType } = donorInfo;
-  
-  const prompt = `Generate a heartfelt, personalized thank you email in authentic 90s internet style for ${name} (age: ${age}) who just donated ₹${amount} for "${selectedItem.item}".
+async function generateEmailWithGemini(donorInfo, amount) {
+  const prompt = `Generate a heartfelt, personalized thank you email in authentic 90s internet style for ${donorInfo.name} (age: ${donorInfo.age}) who donated ₹${amount} for "${donorInfo.selectedItem.item}".
 
-Context: This is a donation site where people fund childhood experiences they couldn't have - both for current kids and adults who missed out.
-
-Donor Details:
-- Name: ${name}
-- Age: ${age}  
-- Section: ${sectionType} (kids = helping children, adultKids = helping adults fulfill missed childhood dreams)
-- Their personal story: "${story}"
-- Item funded: "${selectedItem.item}"
-- Impact: "${selectedItem.impact}"
+Their story: "${donorInfo.story}"
+Section: ${donorInfo.sectionType}
+Impact: ${donorInfo.selectedItem.impact}
 
 Requirements:
-- Use authentic 90s internet style with ASCII art borders
-- Reference childhood nostalgia and healing inner child themes
-- Be emotionally resonant and acknowledge their personal connection
-- Include specific impact of their donation
-- Add multiple exclamation points and 90s cyber-slang
-- Reference "cyberspace", "information superhighway", "digital revolution"
+- Use 90s internet style with ASCII borders
+- Reference childhood nostalgia themes  
+- Include specific donation impact
 - Keep under 300 words
-- Make them feel they're healing their own inner child while helping others
-- If they shared a personal story, reference it meaningfully
 - Use caps for emphasis and celebration
+- Include ASCII art borders like ═══
 
-Style: Mix nostalgic warmth with 90s cyber-optimism and genuine gratitude.
-Tone: Enthusiastic but heartfelt, like a message from 1995.`;
+Style: Mix nostalgic warmth with 90s cyber-optimism.`;
 
   try {
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
@@ -181,51 +157,24 @@ Tone: Enthusiastic but heartfelt, like a message from 1995.`;
     
   } catch (error) {
     console.error('❌ Gemini API failed:', error);
-    return generateFallbackEmail(name, amount, selectedItem, story, sectionType);
-  }
-}
-
-function generateFallbackEmail(name, amount, selectedItem, story, sectionType) {
-  const personalNote = story && story !== 'No story shared' ? 
-    `\n\nYour story about "${story}" really touched us. By helping others, you're healing that part of yourself that once wished for more.` : 
-    `\n\nWe know everyone has childhood dreams that didn't come true. Thank you for turning that experience into someone else's joy!`;
-
-  const sectionMessage = sectionType === 'kids' ? 
-    'A child is about to experience pure joy because of your generosity!' :
-    'An adult is finally going to experience their childhood dream thanks to you!';
-
-  return `
+    // Fallback email
+    return `
 ╔════════════════════════════════════════════════════════╗
 ║           🌟 CHILDHOOD DREAMS NETWORK 🌟               ║
 ║        CONNECTING HEARTS THROUGH CYBERSPACE!           ║
 ╚════════════════════════════════════════════════════════╝
 
-GREETINGS FROM THE DIGITAL FRONTIER, ${name}!!!
+GREETINGS FROM THE DIGITAL FRONTIER, ${donorInfo.name}!!!
 
 🎉 MISSION STATUS: CHILDHOOD DREAM ACTIVATED! 🎉
 
 Thank you for your INCREDIBLE ₹${amount.toLocaleString()} donation!!!
 
 ✨ DREAM FULFILLED DETAILS ✨
-${selectedItem.emoji} Item: ${selectedItem.item}
-🎯 Impact: ${selectedItem.impact}
-🚀 Status: ${sectionMessage}
+${donorInfo.selectedItem.emoji} Item: ${donorInfo.selectedItem.item}
+🎯 Impact: ${donorInfo.selectedItem.impact}
 
-${personalNote}
-
-You've just joined the CHILDHOOD DREAMS REVOLUTION through the power of the INFORMATION SUPERHIGHWAY! Every donation creates ripples of joy through cyberspace!
-
-Your inner child is probably doing a victory dance right now! 💃🕺
-
-═══════════════════════════════════════════════════════
-            IMPACT THROUGH THE DIGITAL AGE!
-═══════════════════════════════════════════════════════
-
-🌐 Visit our website for more dream fulfillment updates
-💌 Share this joy on the World Wide Web  
-🎮 Keep spreading childhood magic through technology!
-
-WELCOME TO THE FUTURE OF GIVING!
+You've just joined the CHILDHOOD DREAMS REVOLUTION through the power of the INFORMATION SUPERHIGHWAY!
 
 Forever grateful in the digital realm,
 The Childhood Dreams Team 🚀
@@ -233,14 +182,6 @@ The Childhood Dreams Team 🚀
 ╔════════════════════════════════════════════════════════╗
 ║    "Healing yesterday, creating tomorrow!" - Est. 2025 ║
 ╚════════════════════════════════════════════════════════╝
-  `;
-}
-
-// Increase body size limit for webhooks
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '1mb',
-    },
-  },
+    `;
+  }
 }

@@ -12,6 +12,7 @@ export default async function handler(req, res) {
 
   const { amount, donorInfo } = req.body;
 
+  // Validate required fields
   if (!amount || !donorInfo?.name || !donorInfo?.email || !donorInfo?.phone) {
     return res.status(400).json({ error: 'Missing required fields' });
   }

@@ -5,8 +5,8 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 // Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Email transporter setup
-const transporter = nodemailer.createTransporter({
+// Email transporter setup - CORRECT METHOD NAME
+const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
@@ -81,7 +81,7 @@ Requirements:
 - Use authentic 90s internet style with ASCII art borders
 - Reference childhood nostalgia and healing inner child themes
 - Be emotionally resonant and acknowledge their personal connection
-- Include specific impact of their donation
+- Include specific impact of their ₹${amount} donation
 - Add multiple exclamation points and 90s cyber-slang
 - Reference "cyberspace", "information superhighway", "digital revolution"
 - Keep under 300 words
@@ -97,7 +97,7 @@ Format: Include ASCII art borders at top and bottom, use caps for emphasis, incl
   `;
 
   try {
-    // Get the Gemini Pro model
+    // Get the Gemini Pro model (using gemini-1.5-flash which is fast and cost-effective)
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     
     // Generate content
