@@ -3,21 +3,26 @@ import getRawBody from 'raw-body';
 import nodemailer from 'nodemailer';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Initialize Gemini AI
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// Initialize Gemini AI - HARDCODED
+const genAI = new GoogleGenerativeAI('AIzaSyAnSDqqs3K2CwMJB9ohUPBjihvejSJ4JYA'); // Replace with your actual key
 
-// Email transporter - CORRECT METHOD NAME
+// Email transporter - HARDCODED CREDENTIALS
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASSWORD,
+    user: 'abhaykrishnaudainiya@gmail.com',
+    pass: 'vfjrtyvfliuwpzqh', // Your app password
   },
+  tls: {
+    rejectUnauthorized: false
+  }
 });
 
 export const config = {
   api: {
-    bodyParser: false, // Important for signature verification
+    bodyParser: false,
   },
 };
 
@@ -33,17 +38,16 @@ export default async function handler(req, res) {
     // Get raw body for signature verification
     const buf = await getRawBody(req);
     const signature = req.headers['x-razorpay-signature'];
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const webhookSecret = 'ihaveawish'; // HARDCODED webhook secret
     
     // Debug logging
-    console.log('📋 Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('🔐 Webhook secret exists:', !!webhookSecret);
+    console.log('📋 Webhook secret exists:', !!webhookSecret);
     console.log('📝 Received signature:', signature);
     console.log('📦 Body length:', buf.length);
     
     // Check if webhook secret exists
     if (!webhookSecret) {
-      console.error('❌ RAZORPAY_WEBHOOK_SECRET not found in environment');
+      console.error('❌ Webhook secret not configured');
       return res.status(500).json({ error: 'Webhook secret not configured' });
     }
     
@@ -123,7 +127,7 @@ async function sendCustomEmail(donorInfo, amount, paymentId) {
     
     // Send email
     const mailOptions = {
-      from: `"🌟 Childhood Dreams Network" <${process.env.EMAIL_USER}>`,
+      from: '"🌟 Childhood Dreams Network" <abhaykrishnaudainiya@gmail.com>', // HARDCODED
       to: donorInfo.email,
       subject: `🎉 THANK YOU ${donorInfo.name.toUpperCase()} - ${donorInfo.selectedItem.item} DREAM ACTIVATED! 🚀`,
       text: emailContent,
